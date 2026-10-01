@@ -16,6 +16,10 @@ Anyone who can see the image can pin it. Players without the *Create Drawings* p
 created by the GM's client through Investigation Board's own socket — so a GM must be connected, as for
 every other Investigation Board note.
 
+The note is **sized to the image's shape**, so the whole picture shows: a tall phone screenshot makes
+a tall polaroid, a landscape photo a wide one (Investigation Board's own photo notes are a fixed
+225×290 and crop anything that doesn't fit). Extreme shapes are clamped to between 0.3 and 3 width:height.
+
 Edit the caption afterwards like any other photo note.
 
 ## Install
@@ -30,7 +34,12 @@ Then enable it (and Investigation Board) in **Manage Modules**.
 
 ## API
 
-`game.modules.get("investigation-board-journal-notes").api.createPhotoNoteFromImage({ image, caption, linkedObject, x, y })`
+```js
+const api = game.modules.get("investigation-board-journal-notes").api;
+await api.createPhotoNoteFromImage({ image, caption, linkedObject, x, y });
+// Reshape an existing photo note (including one made by Investigation Board itself) to show its whole image:
+await api.fitPhotoNoteToImage(canvas.drawings.controlled[0].document);
+```
 
 ## Coupling
 

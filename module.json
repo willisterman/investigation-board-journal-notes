@@ -2,7 +2,7 @@
   "id": "investigation-board-journal-notes",
   "title": "Investigation Board — Journal Notes",
   "description": "Companion to Investigation Board. Right-click any image you can see in a journal (image pages, images in text pages, shown-to-players popouts) to pin it to the board as a photo note linked back to its page.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "compatibility": {
     "minimum": "14",
     "verified": "14"

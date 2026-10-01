@@ -114,12 +114,47 @@ function describeImage(img, app) {
 /* -------------------------------------------- */
 
 /**
+ * IB draws a photo note's picture into a window inset from the polaroid frame by these
+ * fractions of the note's size, and cover-fits it (crops the overflow) — see the isPhoto
+ * branch of IB's custom-drawing.js. Everything in the note scales with its shape, so sizing
+ * the shape so the window matches the image's aspect shows the whole picture.
+ */
+const PHOTO_WINDOW_W = 1 - 0.13333;
+const PHOTO_WINDOW_H = 1 - 0.30246;
+/** Keep extreme panoramas / receipts from making a note a sliver. */
+const MIN_RATIO = 0.3;
+const MAX_RATIO = 3;
+
+async function imageAspect(image) {
+  try {
+    const tex = await foundry.canvas.loadTexture(image);
+    if (tex?.width && tex?.height) return tex.width / tex.height;
+  } catch (_) { /* unreadable image: fall back to the default frame */ }
+  return null;
+}
+
+/**
+ * Note shape whose photo window has the image's aspect. Portrait images keep IB's default
+ * width and grow taller; landscape images keep the default height and grow wider, so the
+ * caption strip stays the size IB expects for its font.
+ */
+function photoShapeForAspect(ratio, base) {
+  if (!ratio) return { ...base };
+  const r = Math.min(MAX_RATIO, Math.max(MIN_RATIO, ratio));
+  const defaultRatio = (base.width * PHOTO_WINDOW_W) / (base.height * PHOTO_WINDOW_H);
+  if (r >= defaultRatio) {
+    return { width: Math.round((r * base.height * PHOTO_WINDOW_H) / PHOTO_WINDOW_W), height: base.height };
+  }
+  return { width: base.width, height: Math.round((base.width * PHOTO_WINDOW_W) / (r * PHOTO_WINDOW_H)) };
+}
+
+/**
  * Build the Drawing create data for an IB photo note. Mirrors IB's buildNoteCreateData()
  * and createPhotoNoteFromItem() (not exported) — keep in step with IB's creation-utils.js.
  */
 async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = null, y = null }) {
   const { config, helpers, creation } = await loadIB();
-  const { width, height } = creation.getNoteDimensions("photo");
+  const { width, height } = photoShapeForAspect(await imageAspect(image), creation.getNoteDimensions("photo"));
   const scale = helpers.getEffectiveScale();
 
   if (x === null || y === null) {
@@ -179,6 +214,24 @@ async function createPhotoNoteFromImage(opts) {
   return created?.[0] ?? null;
 }
 
+/**
+ * Reshape an existing photo note (ours or IB's own) so its window shows the whole image.
+ * Keeps the note's current width as the scale, so a note the user has resized stays that size.
+ * Returns the new shape, or null if the drawing isn't a photo note / the image won't load.
+ */
+async function fitPhotoNoteToImage(drawingDoc) {
+  const flags = drawingDoc?.flags?.[IB_ID];
+  if (flags?.type !== "photo") return null;
+  const ratio = await imageAspect(flags.image || PLACEHOLDER);
+  if (!ratio) return null;
+  const { creation, sockets } = await loadIB();
+  const base = creation.getNoteDimensions("photo");
+  const width = drawingDoc.shape.width || base.width;
+  const shape = photoShapeForAspect(ratio, { width, height: Math.round(width * base.height / base.width) });
+  await sockets.collaborativeUpdate(drawingDoc.id, { shape }, drawingDoc.parent?.id);
+  return shape;
+}
+
 /* -------------------------------------------- */
 /*  Context menu wiring                         */
 /* -------------------------------------------- */
@@ -218,7 +271,7 @@ function register() {
       if (game.user.isGM) ui.notifications.warn(`${MODULE_ID}: Investigation Board isn't active — Journal Notes does nothing without it.`);
       return;
     }
-    const api = { createPhotoNoteFromImage, buildPhotoNoteData, describeImage };
+    const api = { createPhotoNoteFromImage, buildPhotoNoteData, describeImage, fitPhotoNoteToImage };
     const mod = game.modules.get(MODULE_ID);
     if (mod) mod.api = api;
     globalThis.IBJournalNotes = api;
