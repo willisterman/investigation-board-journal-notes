@@ -12,9 +12,10 @@ Works on:
 - images embedded in text pages (caption = `<figcaption>`, else a meaningful `alt`, else the page name);
 - "Show Players" image popouts (caption = the popout title, else its caption).
 
-Anyone who can see the image can pin it. Players without the *Create Drawings* permission get the note
-created by the GM's client through Investigation Board's own socket — so a GM must be connected, as for
-every other Investigation Board note.
+Anyone who can see the image can pin it. Players with Foundry's *Create Drawings* permission create the
+note themselves, **no GM needed** (Investigation Board's own create actions currently always route players
+through a connected GM — it checks the scene-creation permission instead of *Create Drawings*). Players
+without *Create Drawings* fall back to Investigation Board's GM relay, so a GM must be connected for them.
 
 The note is **sized to the image's shape**, so the whole picture shows: a tall phone screenshot makes
 a tall polaroid, a landscape photo a wide one (Investigation Board's own photo notes are a fixed

@@ -189,6 +189,26 @@ async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = 
   };
 }
 
+/**
+ * Create the note directly when Foundry would allow it, so players don't need a GM online.
+ * IB's collaborativeCreate() gates its direct path on scene.canUserModify(user, "create") — the
+ * permission to create a *Scene* (ASSISTANT) — so every player falls through to its GM socket
+ * relay even though Foundry only requires DRAWING_CREATE + being the drawing's author
+ * (BaseDrawing #canCreate). We check the real rule and keep IB's relay as the fallback.
+ * `ibCreation` is IB's marker that this is a tool creation, not a paste (see its preCreateDrawing).
+ */
+async function createDrawing(data, sockets) {
+  const options = { skipAutoOpen: true, ibCreation: true };
+  if (game.user.isGM || game.user.can("DRAWING_CREATE")) {
+    try {
+      return await canvas.scene.createEmbeddedDocuments("Drawing", [data], options);
+    } catch (err) {
+      console.warn(`${MODULE_ID} | direct create refused, falling back to the GM relay`, err);
+    }
+  }
+  return sockets.collaborativeCreate(data, { skipAutoOpen: true });
+}
+
 async function createPhotoNoteFromImage(opts) {
   if (!canvas?.scene) {
     ui.notifications.error("Investigation Board: open a scene first — the note goes on the scene you're viewing.");
@@ -196,7 +216,7 @@ async function createPhotoNoteFromImage(opts) {
   }
   const { sockets, state } = await loadIB();
   const data = await buildPhotoNoteData(opts);
-  const created = await sockets.collaborativeCreate(data, { skipAutoOpen: true });
+  const created = await createDrawing(data, sockets);
 
   // Same settle-then-make-interactive fixup IB applies to its own notes.
   if (state.InvestigationBoardState?.isActive && created?.[0]) {
