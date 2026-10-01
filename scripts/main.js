@@ -1,0 +1,228 @@
+/**
+ * Investigation Board — Journal Notes
+ *
+ * Companion to mordachai's Investigation Board. Adds a right-click "Photo Note from Image"
+ * to every image a user can see in a journal (image pages, images embedded in text pages,
+ * and "Show Players" image popouts), creating an Investigation Board photo note on the
+ * scene they're viewing, linked back to the page it came from.
+ *
+ * Note creation goes through Investigation Board's own collaborativeCreate(), so players
+ * without DRAWING_CREATE get their note made by the GM's client exactly as IB's own
+ * context-menu actions do. IB internals are imported from their served paths; the import
+ * URL must match the one IB's main.js resolved, or we'd get a second module instance with
+ * an uninitialised socket — getRoute() keeps them identical under a route prefix.
+ */
+
+const MODULE_ID = "investigation-board-journal-notes";
+const IB_ID = "investigation-board";
+const PLACEHOLDER = `modules/${IB_ID}/assets/placeholder.webp`;
+
+/** Image selectors per host application. Scoped to rendered page content, not the TOC or header. */
+const JOURNAL_IMAGE_SELECTOR = ".journal-entry-page img";
+const POPOUT_IMAGE_SELECTOR = "img";
+
+let ibModules = null;
+
+async function loadIB() {
+  if (ibModules) return ibModules;
+  const path = p => foundry.utils.getRoute(`modules/${IB_ID}/scripts/${p}`);
+  const [config, helpers, sockets, state, creation] = await Promise.all([
+    import(path("config.js")),
+    import(path("utils/helpers.js")),
+    import(path("utils/socket-handler.js")),
+    import(path("state.js")),
+    import(path("utils/creation-utils.js")),
+  ]);
+  ibModules = { config, helpers, sockets, state, creation };
+  return ibModules;
+}
+
+/* -------------------------------------------- */
+/*  Reading the clicked image                   */
+/* -------------------------------------------- */
+
+/**
+ * The image's stored path, not its resolved URL — notes persist the path and other clients
+ * resolve it themselves. Returns null for data:/blob: sources, which can't be shared.
+ */
+function imagePathFromElement(img) {
+  const raw = img.getAttribute("src") || img.dataset.src || "";
+  if (!raw || /^(data|blob):/i.test(raw)) return null;
+  try {
+    const url = new URL(raw, window.location.href);
+    if (url.origin === window.location.origin) {
+      const route = foundry.utils.getRoute("");
+      let p = decodeURIComponent(url.pathname);
+      if (route !== "/" && p.startsWith(route)) p = p.slice(route.length);
+      return p.replace(/^\/+/, "");
+    }
+  } catch (_) { /* fall through to raw */ }
+  return raw;
+}
+
+function isFilenameLike(text, path) {
+  if (!text) return true;
+  const base = (path || "").split("/").pop()?.split("?")[0] ?? "";
+  return text === base || /^[\w.-]+\.(png|jpe?g|webp|gif|avif|svg)$/i.test(text.trim());
+}
+
+/** The page an image belongs to, from the rendered page article or the sheet's current page. */
+function pageFromElement(img, app) {
+  const entry = app?.document;
+  if (!(entry instanceof JournalEntry)) return null;
+  const article = img.closest("[data-page-id]");
+  const pageId = article?.dataset.pageId;
+  return (pageId && entry.pages.get(pageId)) || null;
+}
+
+/**
+ * Work out caption + link for an image. A polaroid wants a short label, so titles win over
+ * captions (which tend to be sentences): image page → page name, then its caption; embedded
+ * image → <figcaption>, a meaningful alt, then the page name; popout → title, then caption.
+ */
+function describeImage(img, app) {
+  const path = imagePathFromElement(img);
+  const page = pageFromElement(img, app);
+  const figcaption = img.closest("figure")?.querySelector("figcaption")?.textContent?.trim();
+  const alt = img.getAttribute("alt")?.trim();
+
+  let caption = "";
+  let linkTarget = null;
+
+  if (page) {
+    caption = page.type === "image"
+      ? (page.name || page.image?.caption?.trim() || "")
+      : (figcaption || (!isFilenameLike(alt, path) && alt) || page.name);
+    linkTarget = page;
+  } else if (app instanceof foundry.applications.apps.ImagePopout) {
+    caption = app.title || app.options.caption?.trim() || figcaption || "";
+    if (app.options.uuid) linkTarget = fromUuidSync(app.options.uuid, { strict: false });
+  } else {
+    caption = figcaption || (!isFilenameLike(alt, path) && alt) || app?.document?.name || "";
+    linkTarget = app?.document ?? null;
+  }
+
+  const linkedObject = linkTarget?.uuid
+    ? `@UUID[${linkTarget.uuid}]{${linkTarget.name ?? caption}}`
+    : "";
+
+  return { path, caption, linkedObject };
+}
+
+/* -------------------------------------------- */
+/*  Note creation                               */
+/* -------------------------------------------- */
+
+/**
+ * Build the Drawing create data for an IB photo note. Mirrors IB's buildNoteCreateData()
+ * and createPhotoNoteFromItem() (not exported) — keep in step with IB's creation-utils.js.
+ */
+async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = null, y = null }) {
+  const { config, helpers, creation } = await loadIB();
+  const { width, height } = creation.getNoteDimensions("photo");
+  const scale = helpers.getEffectiveScale();
+
+  if (x === null || y === null) {
+    const centre = canvas.stage.pivot;
+    x = centre.x - (width * scale) / 2;
+    y = centre.y - (height * scale) / 2;
+  }
+
+  const text = caption.trim();
+  return {
+    type: "r",
+    name: text || config.NOTE_TYPE_LABELS?.photo || "Photo Note",
+    author: game.user.id,
+    x, y,
+    shape: { width, height },
+    fillColor: "#ffffff",
+    fillAlpha: 1,
+    strokeColor: "#000000",
+    strokeWidth: 0,
+    strokeAlpha: 0,
+    locked: false,
+    flags: {
+      [IB_ID]: {
+        type: "photo",
+        text,
+        linkedObject,
+        image: image || PLACEHOLDER,
+        textColor: game.settings.get(IB_ID, "defaultInkColor") || "#000000",
+      },
+      core: { sheetClass: `${IB_ID}.CustomDrawingSheet` },
+    },
+  };
+}
+
+async function createPhotoNoteFromImage(opts) {
+  if (!canvas?.scene) {
+    ui.notifications.error("Investigation Board: open a scene first — the note goes on the scene you're viewing.");
+    return null;
+  }
+  const { sockets, state } = await loadIB();
+  const data = await buildPhotoNoteData(opts);
+  const created = await sockets.collaborativeCreate(data, { skipAutoOpen: true });
+
+  // Same settle-then-make-interactive fixup IB applies to its own notes.
+  if (state.InvestigationBoardState?.isActive && created?.[0]) {
+    setTimeout(() => {
+      const drawing = canvas.drawings.get(created[0].id);
+      if (drawing) {
+        drawing.eventMode = "auto";
+        drawing.interactiveChildren = true;
+      }
+    }, 250);
+  }
+
+  if (created?.length) ui.notifications.info(`Pinned "${data.name}" to the board.`);
+  else ui.notifications.warn("Investigation Board: the note wasn't created — is a GM connected?");
+  return created?.[0] ?? null;
+}
+
+/* -------------------------------------------- */
+/*  Context menu wiring                         */
+/* -------------------------------------------- */
+
+const bound = new WeakSet();
+
+function menuItems(app) {
+  return [{
+    label: "Photo Note from Image",
+    icon: '<i class="fa-solid fa-camera-polaroid"></i>',
+    visible: img => !!canvas?.scene && !!imagePathFromElement(img),
+    onClick: async (event, img) => {
+      const { path, caption, linkedObject } = describeImage(img, app);
+      if (!path) return ui.notifications.warn("Investigation Board: this image has no shareable path.");
+      await createPhotoNoteFromImage({ image: path, caption, linkedObject });
+    },
+  }];
+}
+
+function attach(app, selector) {
+  const el = app.element;
+  if (!el || bound.has(el)) return;
+  bound.add(el);
+  new foundry.applications.ux.ContextMenu(el, selector, menuItems(app), { jQuery: false, fixed: true });
+}
+
+function register() {
+  if (globalThis.__ibJournalNotesRegistered) return;
+  globalThis.__ibJournalNotesRegistered = true;
+
+  // renderJournalEntrySheet also fires for subclasses (Monk's etc. permitting).
+  Hooks.on("renderJournalEntrySheet", app => attach(app, JOURNAL_IMAGE_SELECTOR));
+  Hooks.on("renderImagePopout", app => attach(app, POPOUT_IMAGE_SELECTOR));
+
+  Hooks.once("ready", () => {
+    if (!game.modules.get(IB_ID)?.active) {
+      if (game.user.isGM) ui.notifications.warn(`${MODULE_ID}: Investigation Board isn't active — Journal Notes does nothing without it.`);
+      return;
+    }
+    const api = { createPhotoNoteFromImage, buildPhotoNoteData, describeImage };
+    const mod = game.modules.get(MODULE_ID);
+    if (mod) mod.api = api;
+    globalThis.IBJournalNotes = api;
+  });
+}
+
+register();
