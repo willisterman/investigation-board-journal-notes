@@ -4,7 +4,8 @@
  * Companion to mordachai's Investigation Board. Adds a right-click "Photo Note from Image"
  * to every image a user can see in a journal (image pages, images embedded in text pages,
  * and "Show Players" image popouts), creating an Investigation Board photo note on the
- * scene they're viewing, linked back to the page it came from.
+ * scene they're viewing, linked back to the page it came from. Also takes over IB's own
+ * Photo Note from Scene / Actor menu items so those notes are shaped to the whole image too.
  *
  * Note creation goes through Investigation Board's own collaborativeCreate(), so players
  * without DRAWING_CREATE get their note made by the GM's client exactly as IB's own
@@ -152,7 +153,7 @@ function photoShapeForAspect(ratio, base) {
  * Build the Drawing create data for an IB photo note. Mirrors IB's buildNoteCreateData()
  * and createPhotoNoteFromItem() (not exported) — keep in step with IB's creation-utils.js.
  */
-async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = null, y = null }) {
+async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = null, y = null, extraFlags = {} }) {
   const { config, helpers, creation } = await loadIB();
   const { width, height } = photoShapeForAspect(await imageAspect(image), creation.getNoteDimensions("photo"));
   const scale = helpers.getEffectiveScale();
@@ -183,6 +184,7 @@ async function buildPhotoNoteData({ image, caption = "", linkedObject = "", x = 
         linkedObject,
         image: image || PLACEHOLDER,
         textColor: game.settings.get(IB_ID, "defaultInkColor") || "#000000",
+        ...extraFlags,
       },
       core: { sheetClass: `${IB_ID}.CustomDrawingSheet` },
     },
@@ -271,6 +273,81 @@ function menuItems(app) {
   }];
 }
 
+/* -------------------------------------------- */
+/*  Scenes                                      */
+/* -------------------------------------------- */
+
+const SCENE_ITEM_LABEL = "Photo Note from Scene";   // IB's own label — we take over its onClick
+
+/** The document a directory / navigation context-menu entry stands for. */
+function documentFromLi(li, collection) {
+  const el = li instanceof HTMLElement ? li : li?.[0];
+  const t = el?.closest?.("[data-uuid], [data-entry-id], [data-document-id], [data-scene-id]") ?? el;
+  if (!t) return null;
+  if (t.dataset.uuid) return fromUuidSync(t.dataset.uuid, { strict: false });
+  return collection.get(t.dataset.entryId || t.dataset.documentId || t.dataset.sceneId) ?? null;
+}
+
+const sceneFromLi = li => documentFromLi(li, game.scenes);
+
+/** Photo note of a scene's background (still or video), shaped to the image and linked to the scene. */
+async function createPhotoNoteFromScene(scene) {
+  const caption = scene.navName || scene.name || "Unknown Location";
+  return createPhotoNoteFromImage({
+    image: scene.background?.src || null,
+    caption,
+    linkedObject: `@UUID[${scene.uuid}]{${caption}}`,
+  });
+}
+
+function onSceneContextOptions(app, options) {
+  const onClick = async (event, li) => {
+    const scene = sceneFromLi(li);
+    if (scene) await createPhotoNoteFromScene(scene);
+    else ui.notifications.warn("Investigation Board: couldn't work out which scene that was.");
+  };
+  const ibItem = options.find(o => o.label === SCENE_ITEM_LABEL || o.name === SCENE_ITEM_LABEL);
+  if (ibItem) ibItem.onClick = onClick;
+  else options.push({ label: SCENE_ITEM_LABEL, icon: '<i class="fa-solid fa-camera-polaroid"></i>', onClick });
+}
+
+/* -------------------------------------------- */
+/*  Actors                                      */
+/* -------------------------------------------- */
+
+// IB's own labels — we take over their onClick, as for scenes.
+const ACTOR_ITEM_LABEL = "Photo Note from Actor";
+const UNKNOWN_ACTOR_ITEM_LABEL = "Unknown Photo Note from Actor";
+
+/**
+ * Photo note of an actor's portrait, shaped to the image and linked to the actor. Caption is
+ * IB's own display name (its "character name key" setting, prototype token name by default);
+ * an unknown note is captioned "???" and carries IB's `unknown` flag, as IB's own does.
+ */
+async function createPhotoNoteFromActor(actor, isUnknown = false) {
+  const { helpers } = await loadIB();
+  const caption = isUnknown ? "???" : helpers.getActorDisplayName(actor);
+  return createPhotoNoteFromImage({
+    image: actor.img || null,
+    caption,
+    linkedObject: `@UUID[${actor.uuid}]{${caption}}`,
+    extraFlags: isUnknown ? { unknown: true } : {},
+  });
+}
+
+function onActorContextOptions(app, options) {
+  for (const [label, isUnknown] of [[ACTOR_ITEM_LABEL, false], [UNKNOWN_ACTOR_ITEM_LABEL, true]]) {
+    const onClick = async (event, li) => {
+      const actor = documentFromLi(li, game.actors);
+      if (actor) await createPhotoNoteFromActor(actor, isUnknown);
+      else ui.notifications.warn("Investigation Board: couldn't work out which actor that was.");
+    };
+    const ibItem = options.find(o => o.label === label || o.name === label);
+    if (ibItem) ibItem.onClick = onClick;
+    else options.push({ label, icon: '<i class="fa-solid fa-camera-polaroid"></i>', onClick });
+  }
+}
+
 function attach(app, selector) {
   const el = app.element;
   if (!el || bound.has(el)) return;
@@ -291,7 +368,15 @@ function register() {
       if (game.user.isGM) ui.notifications.warn(`${MODULE_ID}: Investigation Board isn't active — Journal Notes does nothing without it.`);
       return;
     }
-    const api = { createPhotoNoteFromImage, buildPhotoNoteData, describeImage, fitPhotoNoteToImage };
+    // Registered at ready, i.e. after IB's top-level context-option hooks, so IB's
+    // entries are already in the list when we look for them (one item, not two).
+    Hooks.on("getSceneContextOptions", onSceneContextOptions);
+    Hooks.on("getActorContextOptions", onActorContextOptions);
+
+    const api = {
+      createPhotoNoteFromImage, createPhotoNoteFromScene, createPhotoNoteFromActor,
+      buildPhotoNoteData, describeImage, fitPhotoNoteToImage,
+    };
     const mod = game.modules.get(MODULE_ID);
     if (mod) mod.api = api;
     globalThis.IBJournalNotes = api;
