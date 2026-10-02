@@ -35,7 +35,7 @@ jobs:
           mv "$tmp" module.json
 
       - name: Build module.zip (files at archive root)
-        run: zip -r module.zip module.json scripts README.md LICENSE
+        run: zip -r module.zip module.json scripts assets README.md LICENSE
 
       - name: Create GitHub release with assets
         uses: softprops/action-gh-release@v2

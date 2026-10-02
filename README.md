@@ -28,6 +28,25 @@ The note is **sized to the image's shape**, so the whole picture shows: a tall p
 a tall polaroid, a landscape photo a wide one (Investigation Board's own photo notes are a fixed
 225×290 and crop anything that doesn't fit). Extreme shapes are clamped to between 0.3 and 3 width:height.
 
+## What the players know about someone
+
+The GM's right-click menu on an actor has **Players know: name only / face only / name and face** and
+**Hide from players**. Each of these reveals the actor at *Limited* (or hides it again) and decides which
+photo note the players may make:
+
+| Players know | Sidebar and Limited sheet show | Players can pin |
+|---|---|---|
+| **name only** | the name, with a silhouette instead of the portrait | the named note, with the silhouette |
+| **face only** | the portrait | only *Unknown Photo Note* (`???`) |
+| **name and face** | everything | both notes |
+
+For *name only*, the real portrait and token art are kept in the actor's flags and put back when the face is
+revealed. *Face only* doesn't rename the actor, so give it a descriptive name ("The Man in the Grey Fleece").
+
+**Notes already on the board catch up:** when the players learn more, every photo note linked to that actor,
+on every scene, is updated. A silhouette becomes the face, and `???` becomes the name. Actors with no setting
+behave exactly as Investigation Board has them.
+
 Edit the caption afterwards like any other photo note.
 
 ## Install
@@ -47,6 +66,7 @@ const api = game.modules.get("investigation-board-journal-notes").api;
 await api.createPhotoNoteFromImage({ image, caption, linkedObject, x, y });
 await api.createPhotoNoteFromActor(game.actors.getName("Grace Osei"));   // second arg true = unknown ("???")
 await api.createPhotoNoteFromScene(game.scenes.viewed);
+await api.setKnowledge(actor, "name");   // "name" | "face" | "known" | null (hide)
 // Reshape an existing photo note (including one made by Investigation Board itself) to show its whole image:
 await api.fitPhotoNoteToImage(canvas.drawings.controlled[0].document);
 ```

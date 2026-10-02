@@ -335,17 +335,147 @@ async function createPhotoNoteFromActor(actor, isUnknown = false) {
   });
 }
 
+/* -------------------------------------------- */
+/*  What the players know about an actor        */
+/* -------------------------------------------- */
+
+/**
+ * Per-actor knowledge, set by the GM from the actor's context menu:
+ *   "name"  — players know the name, not the face. The actor's portrait and token art are swapped
+ *             for SILHOUETTE (the real paths are kept in our flags), so the sidebar thumbnail and a
+ *             Limited sheet show nothing; players can only pin the named note, with the silhouette.
+ *   "face"  — players have seen them but don't know who they are. Real portrait; players can only
+ *             pin IB's "???" note. ⚠ The actor's own name is visible in the sidebar, so give it a
+ *             descriptive name ("The Man in the Grey Fleece") — this module doesn't rename actors.
+ *   "known" — everything. Both notes, as IB has them.
+ *   none    — hidden (ownership NONE). The flag is cleared and the portrait restored.
+ * Revealing raises default ownership to Limited (never lowers anything above it). Moving towards
+ * more knowledge upgrades every note already pinned for that actor: silhouettes become the face,
+ * "???" captions become the name — on every scene, so the board updates under the players' hands.
+ */
+const SILHOUETTE = `modules/${MODULE_ID}/assets/silhouette.webp`;
+const KNOWLEDGE = {
+  name:  { label: "Players know: name only",  icon: "fa-solid fa-signature", knowsName: true,  knowsFace: false },
+  face:  { label: "Players know: face only",  icon: "fa-solid fa-user-secret", knowsName: false, knowsFace: true },
+  known: { label: "Players know: name and face", icon: "fa-solid fa-id-card", knowsName: true,  knowsFace: true },
+};
+const HIDE_LABEL = "Hide from players";
+
+const knowledgeOf = actor => actor?.getFlag(MODULE_ID, "knowledge") ?? null;
+const portraitOf = actor => actor?.getFlag(MODULE_ID, "portrait") || actor?.img;
+
+/** Which of IB's two actor notes this user may make. The GM can always make both. */
+function canPin(actor, isUnknown) {
+  if (!actor || game.user.isGM) return true;
+  const k = KNOWLEDGE[knowledgeOf(actor)];
+  if (!k) return true;                       // no knowledge set: IB's behaviour (both notes)
+  return isUnknown ? (k.knowsFace && !k.knowsName) : k.knowsName;
+}
+
+async function setKnowledge(actor, state) {
+  const LIMITED = CONST.DOCUMENT_OWNERSHIP_LEVELS.LIMITED;
+  const stored = actor.getFlag(MODULE_ID, "portrait");
+  const storedToken = actor.getFlag(MODULE_ID, "tokenSrc");
+  const update = {};
+
+  if (state === "name") {
+    if (!stored) {
+      update[`flags.${MODULE_ID}.portrait`] = actor.img;
+      update[`flags.${MODULE_ID}.tokenSrc`] = actor.prototypeToken.texture.src;
+    }
+    update.img = SILHOUETTE;
+    update["prototypeToken.texture.src"] = SILHOUETTE;
+  } else if (stored) {
+    update.img = stored;
+    update["prototypeToken.texture.src"] = storedToken || stored;
+    update[`flags.${MODULE_ID}.-=portrait`] = null;
+    update[`flags.${MODULE_ID}.-=tokenSrc`] = null;
+  }
+
+  if (state) {
+    update[`flags.${MODULE_ID}.knowledge`] = state;
+    if ((actor.ownership.default ?? 0) < LIMITED) update["ownership.default"] = LIMITED;
+  } else {
+    update[`flags.${MODULE_ID}.-=knowledge`] = null;
+    update["ownership.default"] = CONST.DOCUMENT_OWNERSHIP_LEVELS.NONE;
+  }
+
+  await actor.update(update);
+  const upgraded = state ? await upgradeNotesFor(actor) : 0;
+  const what = state ? KNOWLEDGE[state].label.toLowerCase() : "hidden from players";
+  ui.notifications.info(`${actor.name}: ${what}${upgraded ? ` — ${upgraded} pinned note${upgraded > 1 ? "s" : ""} updated` : ""}.`);
+}
+
+/**
+ * Bring every photo note linked to this actor up to what the players now know. Only ever adds:
+ * a silhouette becomes the portrait once the face is known, "???" becomes the name once the
+ * name is. Notes made by IB itself are found the same way, by the actor UUID in linkedObject.
+ */
+async function upgradeNotesFor(actor) {
+  const k = KNOWLEDGE[knowledgeOf(actor)];
+  if (!k) return 0;
+  const { helpers } = await loadIB();
+  const name = helpers.getActorDisplayName(actor);
+  const portrait = portraitOf(actor);
+  const tag = `@UUID[${actor.uuid}]`;
+  let count = 0;
+
+  for (const scene of game.scenes) {
+    const updates = [];
+    for (const d of scene.drawings) {
+      const f = d.flags?.[IB_ID];
+      if (f?.type !== "photo" || !f.linkedObject?.includes(tag)) continue;
+      const u = { _id: d.id };
+      if (k.knowsFace && f.image === SILHOUETTE && portrait !== SILHOUETTE) u[`flags.${IB_ID}.image`] = portrait;
+      if (k.knowsName && (f.unknown || f.text === "???")) {
+        Object.assign(u, {
+          name,
+          [`flags.${IB_ID}.text`]: name,
+          [`flags.${IB_ID}.linkedObject`]: `${tag}{${name}}`,
+          [`flags.${IB_ID}.-=unknown`]: null,
+        });
+      }
+      if (Object.keys(u).length > 1) updates.push(u);
+    }
+    if (updates.length) {
+      await scene.updateEmbeddedDocuments("Drawing", updates);
+      count += updates.length;
+    }
+  }
+  return count;
+}
+
 function onActorContextOptions(app, options) {
+  const actorOf = li => documentFromLi(li, game.actors);
+
   for (const [label, isUnknown] of [[ACTOR_ITEM_LABEL, false], [UNKNOWN_ACTOR_ITEM_LABEL, true]]) {
     const onClick = async (event, li) => {
-      const actor = documentFromLi(li, game.actors);
-      if (actor) await createPhotoNoteFromActor(actor, isUnknown);
-      else ui.notifications.warn("Investigation Board: couldn't work out which actor that was.");
+      const actor = actorOf(li);
+      if (!actor) return ui.notifications.warn("Investigation Board: couldn't work out which actor that was.");
+      if (!canPin(actor, isUnknown)) return;
+      await createPhotoNoteFromActor(actor, isUnknown);
     };
+    const visible = li => canPin(actorOf(li), isUnknown);
     const ibItem = options.find(o => o.label === label || o.name === label);
-    if (ibItem) ibItem.onClick = onClick;
-    else options.push({ label, icon: '<i class="fa-solid fa-camera-polaroid"></i>', onClick });
+    if (ibItem) Object.assign(ibItem, { onClick, visible });
+    else options.push({ label, icon: '<i class="fa-solid fa-camera-polaroid"></i>', onClick, visible });
   }
+
+  if (!game.user.isGM) return;
+  for (const [state, k] of Object.entries(KNOWLEDGE)) {
+    options.push({
+      label: k.label,
+      icon: `<i class="${k.icon}"></i>`,
+      visible: li => knowledgeOf(actorOf(li)) !== state,
+      onClick: async (event, li) => { const a = actorOf(li); if (a) await setKnowledge(a, state); },
+    });
+  }
+  options.push({
+    label: HIDE_LABEL,
+    icon: '<i class="fa-solid fa-eye-slash"></i>',
+    visible: li => !!knowledgeOf(actorOf(li)),
+    onClick: async (event, li) => { const a = actorOf(li); if (a) await setKnowledge(a, null); },
+  });
 }
 
 function attach(app, selector) {
@@ -376,6 +506,7 @@ function register() {
     const api = {
       createPhotoNoteFromImage, createPhotoNoteFromScene, createPhotoNoteFromActor,
       buildPhotoNoteData, describeImage, fitPhotoNoteToImage,
+      setKnowledge, knowledgeOf, upgradeNotesFor, SILHOUETTE,
     };
     const mod = game.modules.get(MODULE_ID);
     if (mod) mod.api = api;
