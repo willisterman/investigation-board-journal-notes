@@ -485,9 +485,42 @@ function attach(app, selector) {
   new foundry.applications.ux.ContextMenu(el, selector, menuItems(app), { jQuery: false, fixed: true });
 }
 
+/* -------------------------------------------- */
+/*  One GM answers the relay                    */
+/* -------------------------------------------- */
+
+/** IB socket actions that a GM performs on a player's behalf. Everything else (echoes, broadcasts) passes. */
+const IB_RELAY_ACTIONS = new Set(["createDrawing", "createManyDrawings", "updateDrawing", "deleteDrawing"]);
+
+/**
+ * IB's handleSocketMessage() acts on relay requests in every connected GM's client, so with two GMs
+ * online (Handler + automation, or Handler + the headless relay seat) a player's note is created twice.
+ * Only game.users.activeGM should answer: highest role wins, ties go to the lowest id, so an Assistant
+ * GM relay seat steps aside whenever a full Gamemaster connects. IB registers its listener in an async
+ * ready hook (after a font await), too late for us to remove reliably, so we intercept the registration
+ * itself at init. Remove once Investigation Board gates on activeGM itself.
+ */
+function gateIBRelay() {
+  const socket = game.socket;
+  if (!socket) return console.warn(`${MODULE_ID} | no game.socket at init; every GM will answer IB relay requests`);
+  const ibSocketName = `module.${IB_ID}`;
+  const on = socket.on;
+  socket.on = function (event, listener) {
+    if (event !== ibSocketName || typeof listener !== "function") return on.call(this, event, listener);
+    socket.on = on;
+    const gated = function (data) {
+      if (IB_RELAY_ACTIONS.has(data?.action) && game.user !== game.users.activeGM) return;
+      return listener.call(this, data);
+    };
+    return on.call(this, event, gated);
+  };
+}
+
 function register() {
   if (globalThis.__ibJournalNotesRegistered) return;
   globalThis.__ibJournalNotesRegistered = true;
+
+  Hooks.once("init", gateIBRelay);
 
   // renderJournalEntrySheet also fires for subclasses (Monk's etc. permitting).
   Hooks.on("renderJournalEntrySheet", app => attach(app, JOURNAL_IMAGE_SELECTOR));

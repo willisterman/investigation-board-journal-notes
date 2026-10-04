@@ -49,6 +49,14 @@ behave exactly as Investigation Board has them.
 
 Edit the caption afterwards like any other photo note.
 
+## Only one GM answers relayed requests
+
+Investigation Board relays a player's create, move or delete of a note they don't own to a connected GM.
+In Investigation Board 5.9.0 **every** connected GM handles each request, so with two GMs online a
+player's note is created twice. This module lets only `game.users.activeGM` answer (the highest-role
+connected GM; ties go to the lowest user id). An always-on Assistant GM "relay" seat therefore stands
+aside whenever a full Gamemaster is connected. This patch goes once Investigation Board does this itself.
+
 ## Install
 
 Setup → Add-on Modules → Install Module → Manifest URL:

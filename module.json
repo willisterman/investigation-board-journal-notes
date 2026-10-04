@@ -2,7 +2,7 @@
   "id": "investigation-board-journal-notes",
   "title": "Investigation Board — Journal Notes",
   "description": "Companion to Investigation Board. Right-click any image you can see in a journal (image pages, images in text pages, shown-to-players popouts), or any scene or actor, to pin it to the board as a photo note shaped to the whole image and linked back to where it came from. The GM can set what the players know about each actor (name only, face only, both), and pinned notes fill in as they learn more.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "compatibility": {
     "minimum": "14",
     "verified": "14"
